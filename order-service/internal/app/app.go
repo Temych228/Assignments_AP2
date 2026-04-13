@@ -2,6 +2,7 @@ package app
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"time"
 
@@ -15,12 +16,16 @@ import (
 )
 
 type App struct {
-	Router *gin.Engine
-	DB     *sql.DB
+	Router        *gin.Engine
+	DB            *sql.DB
+	PaymentClient *clients.PaymentClientGRPC
 }
 
 func New() (*App, error) {
 	dbURL := os.Getenv("OSdbURL")
+	if dbURL == "" {
+		return nil, fmt.Errorf("OSdbURL is not set")
+	}
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -36,14 +41,18 @@ func New() (*App, error) {
 		return nil, err
 	}
 
-	orderRepo := repository.NewOrderRepository(db)
-
-	paymentURL := os.Getenv("PAYMENT_SERVICE_URL")
-	if paymentURL == "" {
-		paymentURL = "http://localhost:8081"
+	paymentAddr := os.Getenv("PAYMENT_GRPC_ADDR")
+	if paymentAddr == "" {
+		paymentAddr = "localhost:50051"
 	}
 
-	paymentClient := clients.NewPaymentClientHTTP(paymentURL)
+	paymentClient, err := clients.NewPaymentClientGRPC(paymentAddr)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
+	orderRepo := repository.NewOrderRepository(db)
 	orderUC := usecase.NewOrderUsecase(orderRepo, paymentClient)
 	handler := httpadapter.NewHandler(orderUC)
 
@@ -54,7 +63,18 @@ func New() (*App, error) {
 	router.PATCH("/orders/:id/cancel", handler.CancelOrder)
 
 	return &App{
-		Router: router,
-		DB:     db,
+		Router:        router,
+		DB:            db,
+		PaymentClient: paymentClient,
 	}, nil
+}
+
+func (a *App) Close() error {
+	if a.PaymentClient != nil {
+		_ = a.PaymentClient.Close()
+	}
+	if a.DB != nil {
+		return a.DB.Close()
+	}
+	return nil
 }

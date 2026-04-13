@@ -11,7 +11,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to init app: %v", err)
 	}
-	defer a.DB.Close()
+	defer a.Close()
 
 	log.Println("Order Service running on :8080")
 	if err := a.Router.Run(":8080"); err != nil {
