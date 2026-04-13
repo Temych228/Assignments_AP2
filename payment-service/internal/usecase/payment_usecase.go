@@ -1,11 +1,15 @@
 package usecase
 
 import (
+	"errors"
+
 	"payment-service/internal/domain"
 	"payment-service/internal/repository"
 
 	"github.com/google/uuid"
 )
+
+var ErrAmountMustBePositive = errors.New("amount must be > 0")
 
 type PaymentUsecase struct {
 	repo repository.PaymentRepository
@@ -16,6 +20,9 @@ func NewPaymentUsecase(r repository.PaymentRepository) *PaymentUsecase {
 }
 
 func (u *PaymentUsecase) ProcessPayment(orderID string, amount int64) (*domain.Payment, error) {
+	if amount <= 0 {
+		return nil, ErrAmountMustBePositive
+	}
 
 	status := "Authorized"
 	if amount > 100000 {
@@ -30,8 +37,7 @@ func (u *PaymentUsecase) ProcessPayment(orderID string, amount int64) (*domain.P
 		Status:        status,
 	}
 
-	err := u.repo.Create(payment)
-	if err != nil {
+	if err := u.repo.Create(payment); err != nil {
 		return nil, err
 	}
 
