@@ -30,7 +30,7 @@ Stores only `.proto` files (service contracts).
 
 You define all gRPC APIs here.
 
-> `<PUT YOUR PROTO REPO LINK HERE>`
+> `(https://github.com/Temych228/ap2-protos.git)`
 
 ---
 
@@ -42,7 +42,7 @@ Stores generated Go code (`.pb.go`).
 * Services import this module as a dependency
 * Versioning is done using Git tags (e.g. `v1.0.0`)
 
-> `<PUT YOUR GENERATED REPO LINK HERE>`
+> `(https://github.com/Temych228/ap2-protos-go.git)`
 
 ---
 
