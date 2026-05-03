@@ -1,2 +1,11 @@
-/.env
-/.idea
+# IDE
+.idea/
+.vscode/
+
+# Env files — никогда не коммить!
+.env
+**/.env
+
+# Go build artifacts
+bin/
+*.exe

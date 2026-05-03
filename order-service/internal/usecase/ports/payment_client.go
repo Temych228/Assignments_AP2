@@ -6,5 +6,5 @@ type PaymentResult struct {
 }
 
 type PaymentClient interface {
-	Authorize(orderID string, amount int64) (*PaymentResult, error)
+	Authorize(orderID string, amount int64, customerEmail string) (*PaymentResult, error)
 }

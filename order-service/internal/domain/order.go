@@ -5,9 +5,16 @@ import "time"
 type Order struct {
 	ID             string
 	CustomerID     string
+	CustomerEmail  string
 	ItemName       string
 	Amount         int64
 	Status         string
 	CreatedAt      time.Time
 	IdempotencyKey string `json:"-"`
+}
+
+type OrderStatusUpdate struct {
+	OrderID   string
+	Status    string
+	UpdatedAt time.Time
 }

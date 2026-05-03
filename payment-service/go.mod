@@ -3,10 +3,11 @@ module payment-service
 go 1.26.1
 
 require (
-	github.com/Temych228/ap2-protos-go v1.0.1
+	github.com/Temych228/ap2-protos-go v1.0.2
 	github.com/gin-gonic/gin v1.12.0
 	github.com/google/uuid v1.6.0
 	github.com/lib/pq v1.12.1
+	github.com/rabbitmq/amqp091-go v1.11.0
 	google.golang.org/grpc v1.80.0
 )
 

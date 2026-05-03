@@ -1,273 +1,158 @@
-# AP2 Assignment 2 — gRPC & Contract-First Microservices
+# AP2 Assignment 3 — EDA with Message Queues
 
-This project demonstrates a microservices system built with Go using **gRPC for inter-service communication** and a **contract-first development approach**.
-
-The system consists of two independent services:
-
-* **Order Service** — coordinates order processing and communicates with Payment Service via gRPC
-* **Payment Service** — processes payments and exposes a gRPC API
-
-The architecture follows **Clean Architecture principles**, keeping business logic independent from transport and infrastructure layers.
+Microservices system in Go using **gRPC** for inter-service communication and **RabbitMQ** for async event-driven notifications.
 
 ---
 
 ## Repositories
 
-The project is organized into three logical parts:
+| Repo | Purpose |
+|------|---------|
+| **this repo** | Order, Payment, Notification services |
+| [ap2-protos](https://github.com/Temych228/ap2-protos) | `.proto` contract definitions |
+| [ap2-protos-go](https://github.com/Temych228/ap2-protos-go) | Auto-generated Go code (imported as dependency) |
 
-### 1. Main project (this repository)
-
-Contains the implementation of both services:
-
-* `order-service`
-* `payment-service`
-
----
-
-### 2. Proto repository
-
-Stores only `.proto` files (service contracts).
-
-You define all gRPC APIs here.
-
-> `(https://github.com/Temych228/ap2-protos.git)`
+> **No proto files live in this repo.** Services import generated code via `go.mod`.
 
 ---
 
-### 3. Generated code repository
+## Architecture
 
-Stores generated Go code (`.pb.go`).
+```
+HTTP Client
+    │
+    ▼
+Order Service ──gRPC──► Payment Service
+    │  (9090)               │  (50051)
+    │                       │
+    │                       ▼
+    │                  RabbitMQ
+    │               (payment.completed)
+    │                       │
+    ▼                       ▼
+Order DB            Notification Service
+                    (consumer + gRPC client → Order Service)
+```
 
-* Code is generated automatically via GitHub Actions
-* Services import this module as a dependency
-* Versioning is done using Git tags (e.g. `v1.0.0`)
-
-> `(https://github.com/Temych228/ap2-protos-go.git)`
+**Flow:**
+1. `POST /orders` → Order Service creates order → calls Payment Service via gRPC
+2. Payment Service processes payment → publishes `payment.completed` event to RabbitMQ
+3. Notification Service consumes event → logs email simulation
+4. Notification Service also connects to Order Service gRPC stream for real-time status updates
 
 ---
 
-### Contract-first workflow
-
-1. Define or update `.proto` files in the proto repository
-2. Push changes
-3. GitHub Actions generates Go code in the generated repo
-4. Create a release tag (e.g. `v1.0.0`)
-5. Update services:
+## How to run
 
 ```bash
-go get <your-generated-module>@v1.0.0
+docker compose up --build
 ```
+
+All services, databases, and RabbitMQ start automatically.
 
 ---
 
-## Architecture Overview
+## How to update proto contracts
 
-### Order Service
+When you need to add/change a gRPC method:
 
-* Handles order lifecycle
-* Calls Payment Service via gRPC
-* Streams order updates to clients
-* Owns its own database
-
-### Payment Service
-
-* Exposes gRPC API
-* Processes payments
-* Applies validation rules
-* Uses gRPC interceptor for logging
-* Owns its own database
-
----
-
-## Project Structure
-
-Both services follow the same structure:
-
-```
-cmd/                  # entry point
-internal/app/         # dependency wiring
-internal/domain/      # business entities
-internal/usecase/     # core logic
-internal/repository/  # database layer
-internal/transport/
-    grpc/             # gRPC handlers
-    http/             # (only in order-service if needed)
-internal/clients/     # gRPC clients
-migrations/           # SQL files
-```
-
----
-
-## Business Rules
-
-* Monetary values are stored as `int64` (cents)
-* Order amount must be greater than zero
-* Orders start in `Pending` state
-* Payment above limit → `Declined`
-* Services are isolated (no shared DB or models)
-
----
-
-## gRPC API
-
-### Payment Service
-
-* `ProcessPayment(PaymentRequest) returns (PaymentResponse)`
-
-### Order Service
-
-* `SubscribeToOrderUpdates(OrderRequest) returns (stream OrderStatusUpdate)`
-
----
-
-## PostgreSQL LISTEN / NOTIFY
-
-Order updates are delivered in real time using PostgreSQL:
-
-* Database emits `NOTIFY` on status changes
-* Service subscribes using `LISTEN`
-* Updates are pushed to clients via gRPC stream
-
-This eliminates polling and ensures immediate delivery of updates.
-
----
-
-## Environment Variables
-
-Create `.env` files manually.
-
-### order-service/.env
-
-```
-DB_URL=<your-order-db-url>
-GRPC_ADDR=:9090
-PAYMENT_GRPC_ADDR=localhost:50051
-```
-
-### payment-service/.env
-
-```
-DB_URL=<your-payment-db-url>
-GRPC_ADDR=:50051
-```
-
----
-
-## Database Schema
-
-### Orders
-
-```sql
-CREATE TABLE orders (
-    id TEXT PRIMARY KEY,
-    customer_id TEXT NOT NULL,
-    item_name TEXT NOT NULL,
-    amount BIGINT NOT NULL,
-    status TEXT NOT NULL,
-    created_at TIMESTAMP NOT NULL,
-    idempotency_key TEXT UNIQUE
-);
-```
-
-### Payments
-
-```sql
-CREATE TABLE payments (
-    id TEXT PRIMARY KEY,
-    order_id TEXT,
-    transaction_id TEXT,
-    amount BIGINT,
-    status TEXT
-);
-```
-
----
-
-## How to Run
-
-### 1. Clone project
-
+**1. Edit `.proto` in the proto repo and push:**
 ```bash
-git clone <your-main-repo>
-cd <project-folder>
+# in ap2-protos repo
+git add payment/v1/payment.proto
+git commit -m "feat: add CancelPayment rpc"
+git push
+# GitHub Actions auto-generates Go code and creates a new tag (e.g. v1.0.3)
 ```
 
----
-
-### 2. Setup databases
-
-Create two databases:
-
-* `order_db`
-* `payment_db`
-
-Apply migrations manually.
-
----
-
-### 3. Install dependencies
-
+**2. Update the dependency in the affected service(s):**
 ```bash
-go mod tidy
-```
-
----
-
-### 4. Run Payment Service
-
-```bash
+# in this repo, inside the service directory
 cd payment-service
-go run ./cmd/payment-service/main.go
+go get github.com/Temych228/ap2-protos-go@latest
+go mod tidy
+cd ..
+
+# same for order-service or notification-service if they use the changed proto
+```
+
+**3. Implement the new RPC handler and push.**
+
+---
+
+## Environment variables
+
+### order-service
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DB_URL` | — | Postgres connection string |
+| `GRPC_ADDR` | `:9090` | gRPC listen address |
+| `PAYMENT_GRPC_ADDR` | `localhost:50051` | Payment service address |
+
+### payment-service
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DB_URL` | — | Postgres connection string |
+| `GRPC_ADDR` | `:50051` | gRPC listen address |
+| `RABBITMQ_URL` | `amqp://guest:guest@localhost:5672/` | RabbitMQ connection |
+
+### notification-service
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RABBITMQ_URL` | `amqp://guest:guest@localhost:5672/` | RabbitMQ connection |
+| `ORDER_GRPC_ADDR` | — | Order service gRPC address (optional) |
+| `SUBSCRIBE_ORDER_ID` | — | Order UUID to subscribe to via gRPC stream (for demo) |
+| `FAIL_CUSTOMER_EMAIL` | — | Email that simulates processing failure → triggers DLQ |
+
+---
+
+## Reliability & EDA design
+
+| Feature | Implementation |
+|---------|---------------|
+| **Manual ACKs** | `ch.Qos(1,0,false)` + explicit `delivery.Ack/Nack` after log |
+| **Durable queues** | `x-queue-type: quorum` — survives broker restart |
+| **Idempotency** | In-memory `seen map[string]struct{}` keyed on `event_id` |
+| **Publisher confirms** | `ch.Confirm` + wait on `NotifyPublish` channel before returning |
+| **Dead Letter Queue** | `x-delivery-limit: 3` → failed messages move to `payment.completed.dlq` |
+| **Graceful shutdown** | `os/signal.NotifyContext` + `grpcServer.GracefulStop()` |
+
+### Simulate DLQ
+Set `FAIL_CUSTOMER_EMAIL=dlq@example.com` in docker-compose (already set).  
+Any order with that email will be Nack'd 3 times then appear in `payment.completed.dlq`.  
+Check it in RabbitMQ Management UI → http://localhost:15672 (guest/guest).
+
+---
+
+## gRPC APIs
+
+### PaymentService (payment-service:50051)
+```protobuf
+rpc ProcessPayment(PaymentRequest) returns (PaymentResponse)
+rpc GetPaymentStats(GetPaymentStatsRequest) returns (PaymentStats)
+```
+
+### OrderService (order-service:9090)
+```protobuf
+rpc SubscribeToOrderUpdates(OrderRequest) returns (stream OrderStatusUpdate)
 ```
 
 ---
 
-### 5. Run Order Service
+## HTTP API (order-service:8080)
 
 ```bash
-cd order-service
-go run ./cmd/order-service/main.go
+# Create order
+curl -X POST http://localhost:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"customer_id":"c1","customer_email":"user@example.com","item_name":"Laptop","amount":50000}'
+
+# Get order
+curl http://localhost:8080/orders/{id}
+
+# Get stats
+curl http://localhost:8080/orders/stats
+
+# Cancel order
+curl -X PATCH http://localhost:8080/orders/{id}/cancel
 ```
-
----
-
-## Example Request
-
-```bash
-curl.exe -X POST http://localhost:8080/orders ^
-  -H "Content-Type: application/json" ^
-  -d "{\"customer_id\":\"c1\",\"item_name\":\"Laptop\",\"amount\":50000}"
-```
-
----
-
-## gRPC Flow
-
-1. Order is created
-2. Order Service sends gRPC request to Payment Service
-3. Payment is processed
-4. Order status is updated
-
----
-
-## Streaming
-
-Order Service provides real-time updates:
-
-```
-SubscribeToOrderUpdates → stream
-```
-
-* client subscribes once
-* receives updates continuously
-* backed by PostgreSQL events
-
----
-
-## Interceptor
-
-Payment Service includes a gRPC interceptor that logs:
-
-* method name
-* execution time
-* result status

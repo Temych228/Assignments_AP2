@@ -9,6 +9,7 @@ import (
 	paymentv1 "github.com/Temych228/ap2-protos-go/payment/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 )
 
 type PaymentClientGRPC struct {
@@ -18,7 +19,7 @@ type PaymentClientGRPC struct {
 }
 
 func NewPaymentClientGRPC(addr string) (*PaymentClientGRPC, error) {
-	conn, err := grpc.Dial(
+	conn, err := grpc.NewClient(
 		addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
@@ -40,9 +41,12 @@ func (p *PaymentClientGRPC) Close() error {
 	return nil
 }
 
-func (p *PaymentClientGRPC) Authorize(orderID string, amount int64) (*ports.PaymentResult, error) {
+func (p *PaymentClientGRPC) Authorize(orderID string, amount int64, customerEmail string) (*ports.PaymentResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
 	defer cancel()
+	if customerEmail != "" {
+		ctx = metadata.AppendToOutgoingContext(ctx, "customer-email", customerEmail)
+	}
 
 	resp, err := p.client.ProcessPayment(ctx, &paymentv1.PaymentRequest{
 		OrderId: orderID,

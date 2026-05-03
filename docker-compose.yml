@@ -1,0 +1,94 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  order-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: order_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - order-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d order_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  payment-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: payment_db
+    ports:
+      - "5434:5432"
+    volumes:
+      - payment-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d payment_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  payment-service:
+    build:
+      context: ./payment-service
+    environment:
+      DB_URL: postgres://postgres:postgres@payment-db:5432/payment_db?sslmode=disable
+      GRPC_ADDR: :50051
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      payment-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "50051:50051"
+
+  order-service:
+    build:
+      context: ./order-service
+    environment:
+      DB_URL: postgres://postgres:postgres@order-db:5432/order_db?sslmode=disable
+      GRPC_ADDR: :9090
+      PAYMENT_GRPC_ADDR: payment-service:50051
+    depends_on:
+      order-db:
+        condition: service_healthy
+      payment-service:
+        condition: service_started
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+
+  notification-service:
+    build:
+      context: ./notification-service
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      FAIL_CUSTOMER_EMAIL: dlq@example.com
+      # gRPC connection to order-service for streaming order status updates
+      ORDER_GRPC_ADDR: order-service:9090
+      # Optional: set to an existing order UUID to demonstrate streaming subscription
+      SUBSCRIBE_ORDER_ID: ""
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      order-service:
+        condition: service_started
+
+volumes:
+  order-db-data:
+  payment-db-data:

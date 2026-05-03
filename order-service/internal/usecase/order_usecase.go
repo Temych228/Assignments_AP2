@@ -1,6 +1,7 @@
 package usecase
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"time"
@@ -31,7 +32,7 @@ func NewOrderUsecase(r repository.OrderRepository, payAPI ports.PaymentClient) *
 	}
 }
 
-func (u *OrderUsecase) CreateOrder(customerID, itemName string, amount int64, idempotencyKey string) (*domain.Order, error) {
+func (u *OrderUsecase) CreateOrder(customerID, customerEmail, itemName string, amount int64, idempotencyKey string) (*domain.Order, error) {
 	if amount <= 0 {
 		return nil, ErrAmountMustBePositive
 	}
@@ -49,6 +50,7 @@ func (u *OrderUsecase) CreateOrder(customerID, itemName string, amount int64, id
 	order := &domain.Order{
 		ID:             uuid.New().String(),
 		CustomerID:     customerID,
+		CustomerEmail:  customerEmail,
 		ItemName:       itemName,
 		Amount:         amount,
 		Status:         domain.OrderStatusPending,
@@ -67,7 +69,7 @@ func (u *OrderUsecase) CreateOrder(customerID, itemName string, amount int64, id
 		return nil, err
 	}
 
-	paymentResp, err := u.payAPI.Authorize(order.ID, order.Amount)
+	paymentResp, err := u.payAPI.Authorize(order.ID, order.Amount, order.CustomerEmail)
 	if err != nil {
 		_ = u.repo.UpdateStatus(order.ID, domain.OrderStatusFailed)
 		order.Status = domain.OrderStatusFailed
@@ -96,6 +98,10 @@ func (u *OrderUsecase) GetOrder(id string) (*domain.Order, error) {
 
 func (u *OrderUsecase) GetOrderStats() (*domain.OrderStats, error) {
 	return u.repo.Stats()
+}
+
+func (u *OrderUsecase) SubscribeToOrderUpdates(ctx context.Context, orderID string) (<-chan domain.OrderStatusUpdate, <-chan error) {
+	return u.repo.ListenStatusUpdates(ctx, orderID)
 }
 
 func (u *OrderUsecase) CancelOrder(id string) error {

@@ -17,8 +17,9 @@ func NewHandler(u *usecase.PaymentUsecase) *Handler {
 }
 
 type createPaymentRequest struct {
-	OrderID string `json:"order_id"`
-	Amount  int64  `json:"amount"`
+	OrderID       string `json:"order_id"`
+	Amount        int64  `json:"amount"`
+	CustomerEmail string `json:"customer_email"`
 }
 
 func (h *Handler) CreatePayment(c *gin.Context) {
@@ -29,7 +30,7 @@ func (h *Handler) CreatePayment(c *gin.Context) {
 		return
 	}
 
-	payment, err := h.usecase.ProcessPayment(req.OrderID, req.Amount)
+	payment, err := h.usecase.ProcessPayment(c.Request.Context(), req.OrderID, req.Amount, req.CustomerEmail)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return

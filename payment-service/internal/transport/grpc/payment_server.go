@@ -6,6 +6,7 @@ import (
 
 	paymentv1 "github.com/Temych228/ap2-protos-go/payment/v1"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	"payment-service/internal/domain"
@@ -26,7 +27,15 @@ func (s *PaymentServer) ProcessPayment(ctx context.Context, req *paymentv1.Payme
 		return nil, status.Error(codes.InvalidArgument, "amount must be > 0")
 	}
 
-	payment, err := s.usecase.ProcessPayment(req.GetOrderId(), req.GetAmount())
+	customerEmail := ""
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		values := md.Get("customer-email")
+		if len(values) > 0 {
+			customerEmail = values[0]
+		}
+	}
+
+	payment, err := s.usecase.ProcessPayment(ctx, req.GetOrderId(), req.GetAmount(), customerEmail)
 	if err != nil {
 		switch {
 		case errors.Is(err, usecase.ErrAmountMustBePositive):
@@ -44,4 +53,17 @@ func toProtoPaymentResponse(p *domain.Payment) *paymentv1.PaymentResponse {
 		Status:        p.Status,
 		TransactionId: p.TransactionID,
 	}
+}
+
+func (s *PaymentServer) GetPaymentStats(ctx context.Context, _ *paymentv1.GetPaymentStatsRequest) (*paymentv1.PaymentStats, error) {
+	stats, err := s.usecase.GetStats()
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to get payment stats")
+	}
+	return &paymentv1.PaymentStats{
+		TotalCount:      stats.TotalCount,
+		AuthorizedCount: stats.AuthorizedCount,
+		DeclinedCount:   stats.DeclinedCount,
+		TotalAmount:     stats.TotalAmount,
+	}, nil
 }

@@ -21,10 +21,11 @@ func NewPaymentClientHTTP(url string) *PaymentClientHTTP {
 	}
 }
 
-func (p *PaymentClientHTTP) Authorize(orderID string, amount int64) (*ports.PaymentResult, error) {
+func (p *PaymentClientHTTP) Authorize(orderID string, amount int64, customerEmail string) (*ports.PaymentResult, error) {
 	body, _ := json.Marshal(map[string]interface{}{
-		"order_id": orderID,
-		"amount":   amount,
+		"order_id":       orderID,
+		"amount":         amount,
+		"customer_email": customerEmail,
 	})
 
 	resp, err := p.client.Post(p.url+"/payments", "application/json", bytes.NewBuffer(body))

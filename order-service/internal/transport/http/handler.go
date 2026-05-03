@@ -17,9 +17,10 @@ func NewHandler(u *usecase.OrderUsecase) *Handler {
 }
 
 type createOrderRequest struct {
-	CustomerID string `json:"customer_id"`
-	ItemName   string `json:"item_name"`
-	Amount     int64  `json:"amount"`
+	CustomerID    string `json:"customer_id"`
+	CustomerEmail string `json:"customer_email"`
+	ItemName      string `json:"item_name"`
+	Amount        int64  `json:"amount"`
 }
 
 func (h *Handler) CreateOrder(c *gin.Context) {
@@ -31,7 +32,7 @@ func (h *Handler) CreateOrder(c *gin.Context) {
 
 	idempotencyKey := c.GetHeader("Idempotency-Key")
 
-	order, err := h.usecase.CreateOrder(req.CustomerID, req.ItemName, req.Amount, idempotencyKey)
+	order, err := h.usecase.CreateOrder(req.CustomerID, req.CustomerEmail, req.ItemName, req.Amount, idempotencyKey)
 	if err != nil {
 		switch err {
 		case usecase.ErrAmountMustBePositive:
