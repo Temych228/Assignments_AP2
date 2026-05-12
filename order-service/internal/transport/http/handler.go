@@ -51,7 +51,7 @@ func (h *Handler) CreateOrder(c *gin.Context) {
 func (h *Handler) GetOrder(c *gin.Context) {
 	id := c.Param("id")
 
-	order, err := h.usecase.GetOrder(id)
+	order, err := h.usecase.GetOrder(c.Request.Context(), id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
 		return

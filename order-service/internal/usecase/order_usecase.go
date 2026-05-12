@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"order-service/internal/cache"
 	"order-service/internal/domain"
 	"order-service/internal/repository"
 	"order-service/internal/usecase/ports"
@@ -21,15 +22,43 @@ var (
 )
 
 type OrderUsecase struct {
-	repo   repository.OrderRepository
-	payAPI ports.PaymentClient
+	repo     repository.OrderRepository
+	payAPI   ports.PaymentClient
+	cache    cache.OrderCache
+	cacheTTL time.Duration
 }
 
-func NewOrderUsecase(r repository.OrderRepository, payAPI ports.PaymentClient) *OrderUsecase {
+func NewOrderUsecase(
+	r repository.OrderRepository,
+	payAPI ports.PaymentClient,
+	cache cache.OrderCache,
+	cacheTTL time.Duration,
+) *OrderUsecase {
 	return &OrderUsecase{
-		repo:   r,
-		payAPI: payAPI,
+		repo:     r,
+		payAPI:   payAPI,
+		cache:    cache,
+		cacheTTL: cacheTTL,
 	}
+}
+
+func (u *OrderUsecase) GetOrder(ctx context.Context, id string) (*domain.Order, error) {
+	if u.cache != nil {
+		if cached, hit, err := u.cache.Get(ctx, id); err == nil && hit {
+			return cached, nil
+		}
+	}
+
+	order, err := u.repo.GetByID(id)
+	if err != nil {
+		return nil, err
+	}
+
+	if u.cache != nil {
+		_ = u.cache.Set(ctx, order, u.cacheTTL)
+	}
+
+	return order, nil
 }
 
 func (u *OrderUsecase) CreateOrder(customerID, customerEmail, itemName string, amount int64, idempotencyKey string) (*domain.Order, error) {
@@ -73,6 +102,9 @@ func (u *OrderUsecase) CreateOrder(customerID, customerEmail, itemName string, a
 	if err != nil {
 		_ = u.repo.UpdateStatus(order.ID, domain.OrderStatusFailed)
 		order.Status = domain.OrderStatusFailed
+		if u.cache != nil {
+			_ = u.cache.Set(context.Background(), order, u.cacheTTL)
+		}
 		return nil, ErrPaymentServiceDown
 	}
 
@@ -89,11 +121,11 @@ func (u *OrderUsecase) CreateOrder(customerID, customerEmail, itemName string, a
 		return nil, err
 	}
 
-	return order, nil
-}
+	if u.cache != nil {
+		_ = u.cache.Set(context.Background(), order, u.cacheTTL)
+	}
 
-func (u *OrderUsecase) GetOrder(id string) (*domain.Order, error) {
-	return u.repo.GetByID(id)
+	return order, nil
 }
 
 func (u *OrderUsecase) GetOrderStats() (*domain.OrderStats, error) {
@@ -113,10 +145,18 @@ func (u *OrderUsecase) CancelOrder(id string) error {
 	if order.Status == domain.OrderStatusPaid {
 		return ErrCannotCancelPaidOrder
 	}
-
 	if order.Status != domain.OrderStatusPending {
 		return ErrCannotCancelNonPendingOrder
 	}
 
-	return u.repo.UpdateStatus(id, domain.OrderStatusCancelled)
+	if err := u.repo.UpdateStatus(id, domain.OrderStatusCancelled); err != nil {
+		return err
+	}
+
+	order.Status = domain.OrderStatusCancelled
+	if u.cache != nil {
+		_ = u.cache.Set(context.Background(), order, u.cacheTTL)
+	}
+
+	return nil
 }

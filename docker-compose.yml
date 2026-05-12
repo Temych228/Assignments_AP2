@@ -10,6 +10,16 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   order-db:
     image: postgres:16
     environment:
@@ -64,11 +74,16 @@ services:
       DB_URL: postgres://postgres:postgres@order-db:5432/order_db?sslmode=disable
       GRPC_ADDR: :9090
       PAYMENT_GRPC_ADDR: payment-service:50051
+      REDIS_URL: redis:6379
+      ORDER_CACHE_TTL: 5m
+      RATE_LIMIT_PER_MINUTE: 10
     depends_on:
       order-db:
         condition: service_healthy
       payment-service:
         condition: service_started
+      redis:
+        condition: service_healthy
     ports:
       - "8080:8080"
       - "9090:9090"
@@ -78,13 +93,17 @@ services:
       context: ./notification-service
     environment:
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
-      FAIL_CUSTOMER_EMAIL: dlq@example.com
-      # gRPC connection to order-service for streaming order status updates
-      ORDER_GRPC_ADDR: order-service:9090
-      # Optional: set to an existing order UUID to demonstrate streaming subscription
-      SUBSCRIBE_ORDER_ID: ""
+      REDIS_URL: redis:6379
+      PROVIDER_MODE: SIMULATED
+      PROVIDER_LATENCY: 700ms
+      PROVIDER_FAILURE_RATE: 0.25
+      NOTIF_RETRY_MAX: 4
+      NOTIF_BACKOFF_BASE: 2s
+      NOTIF_IDEMPOTENCY_TTL: 24h
     depends_on:
       rabbitmq:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       order-service:
         condition: service_started

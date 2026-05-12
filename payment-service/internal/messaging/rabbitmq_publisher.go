@@ -76,7 +76,7 @@ func (p *RabbitMQPublisher) PublishPaymentCompleted(ctx context.Context, event e
 		amqp.Publishing{
 			ContentType:  "application/json",
 			DeliveryMode: amqp.Persistent,
-			MessageId:    event.EventID,
+			MessageId:    event.PaymentID,
 			Timestamp:    event.OccurredAt,
 			Body:         body,
 		},

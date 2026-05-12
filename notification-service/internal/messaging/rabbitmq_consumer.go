@@ -8,7 +8,10 @@ import (
 	"sync"
 	"time"
 
+	"notification-service/internal/provider"
+
 	amqp "github.com/rabbitmq/amqp091-go"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -19,17 +22,29 @@ const (
 	paymentCompletedName = "payment.completed"
 )
 
-type RabbitMQConsumer struct {
-	conn        *amqp.Connection
-	ch          *amqp.Channel
-	seen        map[string]struct{}
-	mu          sync.Mutex
-	failOrderID string
-	failEmail   string
+type ConsumerConfig struct {
+	RabbitURL    string
+	Sender       provider.EmailSender
+	Redis        *redis.Client
+	RetryMax     int
+	BaseBackoff  time.Duration
+	ProcessedTTL time.Duration
 }
 
-func NewRabbitMQConsumer(url, failOrderID, failEmail string) (*RabbitMQConsumer, error) {
-	conn, err := dialWithRetry(url, 20, 2*time.Second)
+type RabbitMQConsumer struct {
+	conn         *amqp.Connection
+	ch           *amqp.Channel
+	sender       provider.EmailSender
+	rdb          *redis.Client
+	retryMax     int
+	baseBackoff  time.Duration
+	processedTTL time.Duration
+
+	mu sync.Mutex
+}
+
+func NewRabbitMQConsumer(cfg ConsumerConfig) (*RabbitMQConsumer, error) {
+	conn, err := dialWithRetry(cfg.RabbitURL, 20, 2*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -45,18 +60,31 @@ func NewRabbitMQConsumer(url, failOrderID, failEmail string) (*RabbitMQConsumer,
 		_ = conn.Close()
 		return nil, err
 	}
+
 	if err := ch.Qos(1, 0, false); err != nil {
 		_ = ch.Close()
 		_ = conn.Close()
 		return nil, err
 	}
 
+	if cfg.RetryMax <= 0 {
+		cfg.RetryMax = 4
+	}
+	if cfg.BaseBackoff <= 0 {
+		cfg.BaseBackoff = 2 * time.Second
+	}
+	if cfg.ProcessedTTL <= 0 {
+		cfg.ProcessedTTL = 24 * time.Hour
+	}
+
 	return &RabbitMQConsumer{
-		conn:        conn,
-		ch:          ch,
-		seen:        make(map[string]struct{}),
-		failOrderID: failOrderID,
-		failEmail:   failEmail,
+		conn:         conn,
+		ch:           ch,
+		sender:       cfg.Sender,
+		rdb:          cfg.Redis,
+		retryMax:     cfg.RetryMax,
+		baseBackoff:  cfg.BaseBackoff,
+		processedTTL: cfg.ProcessedTTL,
 	}, nil
 }
 
@@ -74,12 +102,12 @@ func (c *RabbitMQConsumer) Consume(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
-			c.handleDelivery(delivery)
+			c.handleDelivery(ctx, delivery)
 		}
 	}
 }
 
-func (c *RabbitMQConsumer) handleDelivery(delivery amqp.Delivery) {
+func (c *RabbitMQConsumer) handleDelivery(ctx context.Context, delivery amqp.Delivery) {
 	var event PaymentCompleted
 	if err := json.Unmarshal(delivery.Body, &event); err != nil {
 		log.Printf("[Notification] invalid payment event: %v", err)
@@ -87,39 +115,96 @@ func (c *RabbitMQConsumer) handleDelivery(delivery amqp.Delivery) {
 		return
 	}
 
-	if (c.failOrderID != "" && event.OrderID == c.failOrderID) || (c.failEmail != "" && event.CustomerEmail == c.failEmail) {
-		log.Printf("[Notification] simulated permanent failure for Order #%s", event.OrderID)
-		_ = delivery.Nack(false, true)
-		return
+	paymentID := event.PaymentID
+	if paymentID == "" {
+		paymentID = event.EventID
 	}
 
-	eventID := formatEventID(event)
-	if c.isDuplicate(eventID) {
+	if processed, err := c.isProcessed(ctx, paymentID); err == nil && processed {
 		_ = delivery.Ack(false)
 		return
 	}
 
-	log.Printf(
-		"[Notification] Sent email to %s for Order #%s. Amount: $%.2f",
-		event.CustomerEmail,
+	// помечаем как "processing"
+	if err := c.markProcessing(ctx, paymentID); err != nil {
+		log.Printf("[Notification] redis mark processing error: %v", err)
+		_ = delivery.Nack(false, true)
+		return
+	}
+
+	subject := fmt.Sprintf("Payment %s for order %s", event.Status, event.OrderID)
+	body := fmt.Sprintf(
+		"Order: %s\nPayment: %s\nAmount: %.2f\nStatus: %s\n",
 		event.OrderID,
+		event.PaymentID,
 		float64(event.Amount)/100,
+		event.Status,
 	)
-	c.markSeen(eventID)
-	_ = delivery.Ack(false)
+
+	var sendErr error
+	for attempt := 1; attempt <= c.retryMax; attempt++ {
+		sendErr = c.sender.Send(ctx, event.CustomerEmail, subject, body)
+		if sendErr == nil {
+			_ = c.markDone(ctx, paymentID)
+			_ = delivery.Ack(false)
+			return
+		}
+
+		if attempt < c.retryMax {
+			backoff := c.baseBackoff * time.Duration(1<<(attempt-1))
+			log.Printf("[Notification] send failed (attempt %d/%d): %v; retrying in %s", attempt, c.retryMax, sendErr, backoff)
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				_ = c.clearStatus(ctx, paymentID)
+				return
+			}
+		}
+	}
+
+	log.Printf("[Notification] permanent failure for payment %s: %v", paymentID, sendErr)
+	_ = c.clearStatus(ctx, paymentID)
+	_ = delivery.Nack(false, false)
 }
 
-func (c *RabbitMQConsumer) isDuplicate(eventID string) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	_, ok := c.seen[eventID]
-	return ok
+func (c *RabbitMQConsumer) statusKey(paymentID string) string {
+	return "notif:payment:" + paymentID
 }
 
-func (c *RabbitMQConsumer) markSeen(eventID string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.seen[eventID] = struct{}{}
+func (c *RabbitMQConsumer) isProcessed(ctx context.Context, paymentID string) (bool, error) {
+	val, err := c.rdb.Get(ctx, c.statusKey(paymentID)).Result()
+	if err == redis.Nil {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return val == "done", nil
+}
+
+func (c *RabbitMQConsumer) markProcessing(ctx context.Context, paymentID string) error {
+	ok, err := c.rdb.SetNX(ctx, c.statusKey(paymentID), "processing", c.processedTTL).Result()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		val, err := c.rdb.Get(ctx, c.statusKey(paymentID)).Result()
+		if err != nil {
+			return err
+		}
+		if val == "done" {
+			return nil
+		}
+	}
+	return nil
+}
+
+func (c *RabbitMQConsumer) markDone(ctx context.Context, paymentID string) error {
+	return c.rdb.Set(ctx, c.statusKey(paymentID), "done", c.processedTTL).Err()
+}
+
+func (c *RabbitMQConsumer) clearStatus(ctx context.Context, paymentID string) error {
+	return c.rdb.Del(ctx, c.statusKey(paymentID)).Err()
 }
 
 func (c *RabbitMQConsumer) Close() error {
@@ -168,15 +253,5 @@ func declareTopology(ch *amqp.Channel) error {
 	if _, err := ch.QueueDeclare(paymentCompletedName, true, false, false, false, args); err != nil {
 		return err
 	}
-	if err := ch.QueueBind(paymentCompletedName, paymentCompletedKey, paymentsExchange, false, nil); err != nil {
-		return err
-	}
-	return nil
-}
-
-func formatEventID(event PaymentCompleted) string {
-	if event.EventID != "" {
-		return event.EventID
-	}
-	return fmt.Sprintf("%s:%d:%s", event.OrderID, event.Amount, event.Status)
+	return ch.QueueBind(paymentCompletedName, paymentCompletedKey, paymentsExchange, false, nil)
 }

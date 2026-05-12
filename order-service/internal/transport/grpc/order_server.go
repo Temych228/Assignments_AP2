@@ -3,12 +3,12 @@ package grpc
 import (
 	"errors"
 
+	"order-service/internal/usecase"
+
 	orderv1 "github.com/Temych228/ap2-protos-go/order/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
-
-	"order-service/internal/usecase"
 )
 
 type OrderServer struct {
@@ -26,7 +26,9 @@ func (s *OrderServer) SubscribeToOrderUpdates(req *orderv1.OrderRequest, stream 
 		return status.Error(codes.InvalidArgument, "order_id is required")
 	}
 
-	order, err := s.usecase.GetOrder(orderID)
+	ctx := stream.Context()
+
+	order, err := s.usecase.GetOrder(ctx, orderID)
 	if err != nil {
 		return status.Error(codes.NotFound, "order not found")
 	}
@@ -39,19 +41,22 @@ func (s *OrderServer) SubscribeToOrderUpdates(req *orderv1.OrderRequest, stream 
 		return err
 	}
 
-	updates, errs := s.usecase.SubscribeToOrderUpdates(stream.Context(), orderID)
+	updates, errs := s.usecase.SubscribeToOrderUpdates(ctx, orderID)
+
 	for {
 		select {
-		case <-stream.Context().Done():
+		case <-ctx.Done():
 			return nil
+
 		case err, ok := <-errs:
 			if !ok {
 				errs = nil
 				continue
 			}
-			if err != nil && !errors.Is(err, stream.Context().Err()) {
+			if err != nil && !errors.Is(err, ctx.Err()) {
 				return status.Error(codes.Internal, err.Error())
 			}
+
 		case update, ok := <-updates:
 			if !ok {
 				return nil

@@ -50,6 +50,7 @@ func (u *PaymentUsecase) ProcessPayment(ctx context.Context, orderID string, amo
 	if u.publisher != nil {
 		err := u.publisher.PublishPaymentCompleted(ctx, events.PaymentCompleted{
 			EventID:       uuid.New().String(),
+			PaymentID:     payment.ID,
 			OrderID:       payment.OrderID,
 			Amount:        payment.Amount,
 			CustomerEmail: payment.CustomerEmail,
@@ -62,10 +63,6 @@ func (u *PaymentUsecase) ProcessPayment(ctx context.Context, orderID string, amo
 	}
 
 	return payment, nil
-}
-
-func (u *PaymentUsecase) GetPayment(orderID string) (*domain.Payment, error) {
-	return u.repo.GetByOrderID(orderID)
 }
 
 func (u *PaymentUsecase) GetStats() (*domain.PaymentStats, error) {
