@@ -2,6 +2,7 @@ package http
 
 import (
 	"net/http"
+	"order-service/internal/domain"
 
 	"order-service/internal/usecase"
 
@@ -32,20 +33,49 @@ func (h *Handler) CreateOrder(c *gin.Context) {
 
 	idempotencyKey := c.GetHeader("Idempotency-Key")
 
-	order, err := h.usecase.CreateOrder(req.CustomerID, req.CustomerEmail, req.ItemName, req.Amount, idempotencyKey)
-	if err != nil {
-		switch err {
-		case usecase.ErrAmountMustBePositive:
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		case usecase.ErrPaymentServiceDown:
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
-		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	type result struct {
+		order *domain.Order // нужен импорт "order-service/internal/domain"
+		err   error
+	}
+
+	const attempts = 5
+	results := make(chan result, attempts)
+
+	for i := 0; i < attempts; i++ {
+		go func() {
+			order, err := h.usecase.CreateOrder(
+				req.CustomerID, req.CustomerEmail, req.ItemName, req.Amount, idempotencyKey,
+			)
+			results <- result{order, err}
+		}()
+	}
+
+	var successOrder *domain.Order
+	var lastErr error
+
+	for i := 0; i < attempts; i++ {
+		r := <-results
+		if r.err == nil && r.order != nil && successOrder == nil {
+			successOrder = r.order
 		}
+		if r.err != nil {
+			lastErr = r.err
+		}
+	}
+
+	if successOrder != nil {
+		c.JSON(http.StatusOK, successOrder)
 		return
 	}
 
-	c.JSON(http.StatusOK, order)
+	switch lastErr {
+	case usecase.ErrAmountMustBePositive:
+		c.JSON(http.StatusBadRequest, gin.H{"error": lastErr.Error()})
+	case usecase.ErrPaymentServiceDown:
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": lastErr.Error()})
+	default:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": lastErr.Error()})
+	}
 }
 
 func (h *Handler) GetOrder(c *gin.Context) {

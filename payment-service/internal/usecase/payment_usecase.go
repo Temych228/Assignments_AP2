@@ -3,12 +3,12 @@ package usecase
 import (
 	"context"
 	"errors"
-	"time"
-
+	"math/rand"
 	"payment-service/internal/domain"
 	"payment-service/internal/events"
 	"payment-service/internal/messaging"
 	"payment-service/internal/repository"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -29,9 +29,9 @@ func (u *PaymentUsecase) ProcessPayment(ctx context.Context, orderID string, amo
 		return nil, ErrAmountMustBePositive
 	}
 
-	status := "Authorized"
-	if amount > 100000 {
-		status = "Declined"
+	status := "Declined"
+	if rand.Intn(100) < 20 { // 20% успех, 80% неудача
+		status = "Authorized"
 	}
 
 	payment := &domain.Payment{
